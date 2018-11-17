@@ -5,7 +5,7 @@
 // and a C++ implementatation
 
 use std::io;
-use std::io::{Read, Write};
+use std::io::Read;
 
 use bitstream::{Bits, BitReader, BitWriter};
 
@@ -361,8 +361,14 @@ where R: Read, W: BitWriter {
     Ok(())
 }
 
-/// LZW encoder using the algorithm of GIF files.
-pub struct Encoder<W: BitWriter> {
+macro_rules! define_encoder_struct {
+    {$(
+        $name:ident, $offset:expr, $offset_clear_code:expr, #[$doc:meta];
+    )*} => {
+$( // START struct definition
+
+#[$doc]
+pub struct $name<W: BitWriter> {
     w: W,
     dict: EncodingDict,
     min_code_size: u8,
@@ -370,18 +376,18 @@ pub struct Encoder<W: BitWriter> {
     i: Option<Code>
 }
 
-impl<W: BitWriter> Encoder<W> {
+impl<W: BitWriter> $name<W> {
     /// Creates a new LZW encoder.
     ///
     /// **Note**: If `min_code_size < 8` then `Self::encode_bytes` might panic when
     /// the supplied data containts values that exceed `1 << min_code_size`.
-    pub fn new(mut w: W, min_code_size: u8) -> io::Result<Encoder<W>> {
+    pub fn new(mut w: W, min_code_size: u8) -> io::Result<$name<W>> {
         let mut dict = EncodingDict::new(min_code_size);
         dict.push_node(Node::new(0)); // clear code
         dict.push_node(Node::new(0)); // end code
         let code_size = min_code_size + 1;
         try!(w.write_bits(dict.clear_code(), code_size));
-        Ok(Encoder {
+        Ok($name {
             w: w,
             dict: dict,
             min_code_size: min_code_size,
@@ -412,11 +418,11 @@ impl<W: BitWriter> Encoder<W> {
             }
             // There is a hit: do not write out code but continue
             let next_code = dict.next_code();
-            if next_code > (1 << *code_size as usize)
+            if next_code > ((1 << *code_size as usize) - $offset)
                && *code_size < MAX_CODESIZE {
                 *code_size += 1;
             }
-            if next_code > MAX_ENTRIES {
+            if next_code > MAX_ENTRIES - $offset_clear_code {
                 dict.reset();
                 dict.push_node(Node::new(0)); // clear code
                 dict.push_node(Node::new(0)); // end code
@@ -429,7 +435,7 @@ impl<W: BitWriter> Encoder<W> {
     }
 }
 
-impl<W: BitWriter> Drop for Encoder<W> {
+impl<W: BitWriter> Drop for $name<W> {
     #[cfg(feature = "raii_no_panic")]
     fn drop(&mut self) {
         let w = &mut self.w;
@@ -456,9 +462,19 @@ impl<W: BitWriter> Drop for Encoder<W> {
     }
 }
 
+)* // END struct definition
+
+    }
+}
+
+define_encoder_struct!{
+    Encoder, 0, 0, #[doc = "LZW encoder using the algorithm of GIF files."];
+    EncoderTIFF, 1, 3, #[doc = "LZW encoder using the algorithm of TIFF files."];
+}
+
 #[cfg(test)]
 #[test]
-fn round_trip() {
+fn round_trip_gif() {
     use {LsbWriter, LsbReader};
     
     let size = 8;
@@ -470,6 +486,30 @@ fn round_trip() {
     }
     println!("{:?}", compressed);
     let mut dec = Decoder::new(LsbReader::new(), size);
+    let mut compressed = &compressed[..];
+    let mut data2 = vec![];
+    while compressed.len() > 0 {
+        let (start, bytes) = dec.decode_bytes(&compressed).unwrap();
+        compressed = &compressed[start..];
+        data2.extend(bytes.iter().map(|&i| i));
+    }
+    assert_eq!(data2, data)
+}
+
+#[cfg(test)]
+#[test]
+fn round_trip_tiff() {
+    use {MsbWriter, MsbReader};
+
+    let size = 8;
+    let data = b"TOBEORNOTTOBEORTOBEORNOT";
+    let mut compressed = vec![];
+    {
+        let mut enc = EncoderTIFF::new(MsbWriter::new(&mut compressed), size).unwrap();
+        enc.encode_bytes(data).unwrap();
+    }
+    println!("{:?}", compressed);
+    let mut dec = DecoderEarlyChange::new(MsbReader::new(), size);
     let mut compressed = &compressed[..];
     let mut data2 = vec![];
     while compressed.len() > 0 {

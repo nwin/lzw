@@ -29,6 +29,7 @@ pub use lzw::{
     Decoder,
     DecoderEarlyChange,
     Encoder,
+    EncoderTIFF,
     encode
 };
 
